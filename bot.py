@@ -1583,8 +1583,8 @@ def ask_maya(
 # ============================================================
 def send_message(vk, peer_id: int, text: str,
                  attachment: str = None, conv_message_id: int = None):
-    kwargs = {"peer_id": peer_id, "message": text,
-              "random_id": int(time.time() * 10000)}
+    random_id = int(time.time() * 10000)
+    kwargs = {"peer_id": peer_id, "message": text, "random_id": random_id}
     if attachment:
         kwargs["attachment"] = attachment
     if conv_message_id:
@@ -1599,7 +1599,6 @@ def send_message(vk, peer_id: int, text: str,
         print(f"[send forward error] {e}")
         try:
             kwargs.pop("forward", None)
-            kwargs["random_id"] = int(time.time() * 10000) + 1
             vk.messages.send(**kwargs)
         except Exception as e2:
             print(f"[send error] {e2}")
