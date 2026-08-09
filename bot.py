@@ -620,7 +620,7 @@ for _cat in PLACE_CATEGORIES.values():
 
 
 def extract_city_from_text(text: str):
-    """Извлекаем название города из текста запроса."""
+    """Извлекаем название города из текста запроса — с учётом порядка слов и падежей."""
     stopwords = {
         "мая", "привет", "пожалуйста", "скажи", "расскажи", "найди", "покажи",
         "какая", "какое", "какой", "какие", "сейчас", "сегодня", "завтра",
@@ -632,16 +632,27 @@ def extract_city_from_text(text: str):
         "где", "есть", "можно", "адрес", "находится", "рядом", "открыт",
         "работает", "хочу", "нужна", "нужно", "посоветуй", "порекомендуй",
     }
-    # Ищем слова с заглавной буквы — это потенциальные названия городов
-    words = re.findall(r'[А-ЯЁA-Z][а-яёa-z]{2,}', text)
-    for word in words:
-        if word.lower() not in stopwords:
-            return normalize_city_name(word)
-    match = re.search(r'\bв\s+([а-яёА-ЯЁ]{3,})', text, re.IGNORECASE)
+
+    # 1) Самый точный сигнал: "в X" / "во X"
+    match = re.search(r'\b(?:в|во)\s+([а-яёА-ЯЁa-zA-Z\-]{3,})', text, re.IGNORECASE)
     if match:
         candidate = match.group(1)
         if candidate.lower() not in stopwords:
             return normalize_city_name(candidate)
+
+    # 2) Слово с заглавной буквы посреди фразы — вероятно, имя собственное
+    words = re.findall(r'[А-ЯЁA-Z][а-яёa-z\-]{2,}', text)
+    for word in words:
+        if word.lower() not in stopwords:
+            return normalize_city_name(word)
+
+    # 3) Фолбэк: "погода москва", "погода санкт-петербург" (без заглавной буквы,
+    #    без предлога "в") — берём последнее значимое слово в запросе
+    all_words = re.findall(r'[а-яёА-ЯЁa-zA-Z\-]{3,}', text)
+    candidates = [w for w in all_words if w.lower() not in stopwords]
+    if candidates:
+        return normalize_city_name(candidates[-1])
+
     return None
 
 
@@ -957,46 +968,114 @@ def has_weather_intent(text: str) -> bool:
 def has_time_intent(text: str) -> bool:
     return any(kw in text.lower() for kw in TIME_TRIGGERS)
 
-def fetch_weather(city: str):
+WEATHER_CODES = {
+    0: "Ясно", 1: "Преимущественно ясно", 2: "Переменная облачность", 3: "Пасмурно",
+    45: "Туман", 48: "Изморозь",
+    51: "Лёгкая морось", 53: "Морось", 55: "Сильная морось",
+    56: "Ледяная морось", 57: "Сильная ледяная морось",
+    61: "Небольшой дождь", 63: "Дождь", 65: "Сильный дождь",
+    66: "Ледяной дождь", 67: "Сильный ледяной дождь",
+    71: "Небольшой снег", 73: "Снег", 75: "Сильный снегопад", 77: "Снежные зёрна",
+    80: "Небольшой ливень", 81: "Ливень", 82: "Сильный ливень",
+    85: "Небольшой снегопад", 86: "Сильный снегопад",
+    95: "Гроза", 96: "Гроза с небольшим градом", 99: "Гроза с сильным градом",
+}
+
+def geocode_open_meteo(city: str):
     try:
         r = requests.get(
-            "http://api.openweathermap.org/data/2.5/weather",
-            params={"q": city, "appid": WEATHER_API_KEY, "units": "metric", "lang": "ru"},
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city, "count": 1, "language": "ru", "format": "json"},
             timeout=10
         )
-        d = r.json()
-        if d.get("cod") != 200:
-            return None
-        ofs = d.get("timezone", 0)
-        ldt = datetime.now(timezone.utc) + timedelta(seconds=ofs)
-        return (
-            f"📍 {d['name']}, {d['sys']['country']}\n"
-            f"🕐 Местное время: {ldt.strftime('%H:%M, %d.%m.%Y')}\n"
-            f"🌡️ {d['main']['temp']:.1f}°C (ощущается {d['main']['feels_like']:.1f}°C)\n"
-            f"☁️ {d['weather'][0]['description'].capitalize()}\n"
-            f"💧 Влажность: {d['main']['humidity']}%\n"
-            f"💨 Ветер: {d['wind']['speed']} м/с"
-        )
+        results = r.json().get("results")
+        if results:
+            res = results[0]
+            return {
+                "lat": res["latitude"], "lon": res["longitude"],
+                "name": res.get("name", city), "country": res.get("country", ""),
+            }
     except Exception as e:
-        print(f"[weather error] {e}")
+        print(f"[geocode open-meteo] {e}")
+    return None
+
+def geocode_nominatim(city: str):
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": city, "format": "json", "limit": 1, "accept-language": "ru"},
+            headers={"User-Agent": "MayaAI-VK-Bot/2.0"},
+            timeout=10
+        )
+        data = r.json()
+        if data:
+            item = data[0]
+            parts = item.get("display_name", city).split(",")
+            return {
+                "lat": float(item["lat"]), "lon": float(item["lon"]),
+                "name": parts[0].strip(),
+                "country": parts[-1].strip() if len(parts) > 1 else "",
+            }
+    except Exception as e:
+        print(f"[geocode nominatim] {e}")
+    return None
+
+def geocode_city(city: str):
+    return geocode_open_meteo(city) or geocode_nominatim(city)
+
+def fetch_open_meteo_current(geo: dict):
+    try:
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": geo["lat"], "longitude": geo["lon"],
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code",
+                "timezone": "auto",
+            },
+            timeout=10
+        )
+        cur = r.json().get("current")
+        if not cur:
+            return None
+        try:
+            time_str = datetime.fromisoformat(cur.get("time", "")).strftime("%H:%M, %d.%m.%Y")
+        except Exception:
+            time_str = cur.get("time", "")
+        return cur, time_str
+    except Exception as e:
+        print(f"[weather open-meteo error] {e}")
         return None
 
-def fetch_time_only(city: str):
-    try:
-        r = requests.get(
-            "http://api.openweathermap.org/data/2.5/weather",
-            params={"q": city, "appid": WEATHER_API_KEY, "units": "metric", "lang": "ru"},
-            timeout=10
-        )
-        d = r.json()
-        if d.get("cod") != 200:
-            return None
-        ofs = d.get("timezone", 0)
-        ldt = datetime.now(timezone.utc) + timedelta(seconds=ofs)
-        return f"🕐 Текущее время в {d['name']}, {d['sys']['country']}: {ldt.strftime('%H:%M, %d.%m.%Y')}"
-    except Exception as e:
-        print(f"[time error] {e}")
+def fetch_weather(city: str):
+    geo = geocode_city(city)
+    if not geo:
         return None
+    result = fetch_open_meteo_current(geo)
+    if not result:
+        return None
+    cur, time_str = result
+    desc = WEATHER_CODES.get(cur.get("weather_code"), "Нет данных")
+    country_str = f", {geo['country']}" if geo.get("country") else ""
+    return (
+        f"📍 {geo['name']}{country_str}\n"
+        f"🕐 Местное время: {time_str}\n"
+        f"🌡️ {cur.get('temperature_2m')}°C (ощущается {cur.get('apparent_temperature')}°C)\n"
+        f"☁️ {desc}\n"
+        f"💧 Влажность: {cur.get('relative_humidity_2m')}%\n"
+        f"💨 Ветер: {cur.get('wind_speed_10m')} м/с\n"
+        f"_Источник данных: Open-Meteo / OpenStreetMap_"
+    )
+
+def fetch_time_only(city: str):
+    geo = geocode_city(city)
+    if not geo:
+        return None
+    result = fetch_open_meteo_current(geo)
+    if not result:
+        return None
+    _, time_str = result
+    country_str = f", {geo['country']}" if geo.get("country") else ""
+    return f"🕐 Текущее время в {geo['name']}{country_str}: {time_str}"
 
 def get_weather_context(text: str):
     city = extract_city_from_text(text)
