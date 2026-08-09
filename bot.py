@@ -620,7 +620,13 @@ for _cat in PLACE_CATEGORIES.values():
 
 
 def extract_city_from_text(text: str):
-    """Извлекаем название города из текста запроса — с учётом порядка слов и падежей."""
+    """
+    Извлекаем название города/села из текста запроса.
+    Возвращаем СЫРУЮ форму (без pymorphy) — многие топонимы на -ово/-ево/-ино
+    (Башмаково, Иваново, Пушкино) pymorphy некорректно приводит к фамилии
+    («Башмаков» вместо «Башмаково»), что ломает поиск. Нормализация падежа
+    выполняется отдельно, как запасной шаг, при геокодировании.
+    """
     stopwords = {
         "мая", "привет", "пожалуйста", "скажи", "расскажи", "найди", "покажи",
         "какая", "какое", "какой", "какие", "сейчас", "сегодня", "завтра",
@@ -633,25 +639,21 @@ def extract_city_from_text(text: str):
         "работает", "хочу", "нужна", "нужно", "посоветуй", "порекомендуй",
     }
 
-    # 1) Самый точный сигнал: "в X" / "во X"
     match = re.search(r'\b(?:в|во)\s+([а-яёА-ЯЁa-zA-Z\-]{3,})', text, re.IGNORECASE)
     if match:
         candidate = match.group(1)
         if candidate.lower() not in stopwords:
-            return normalize_city_name(candidate)
+            return candidate.capitalize()
 
-    # 2) Слово с заглавной буквы посреди фразы — вероятно, имя собственное
     words = re.findall(r'[А-ЯЁA-Z][а-яёa-z\-]{2,}', text)
     for word in words:
         if word.lower() not in stopwords:
-            return normalize_city_name(word)
+            return word.capitalize()
 
-    # 3) Фолбэк: "погода москва", "погода санкт-петербург" (без заглавной буквы,
-    #    без предлога "в") — берём последнее значимое слово в запросе
     all_words = re.findall(r'[а-яёА-ЯЁa-zA-Z\-]{3,}', text)
     candidates = [w for w in all_words if w.lower() not in stopwords]
     if candidates:
-        return normalize_city_name(candidates[-1])
+        return candidates[-1].capitalize()
 
     return None
 
@@ -1021,7 +1023,23 @@ def geocode_nominatim(city: str):
     return None
 
 def geocode_city(city: str):
-    return geocode_open_meteo(city) or geocode_nominatim(city)
+    """
+    Сначала пробуем найти город/село ровно в том виде, как написал пользователь
+    (важно для несклоняемых топонимов вроде «Башмаково»). Если не нашли —
+    пробуем pymorphy-нормализованную форму (важно для реальных падежей,
+    например «Москве» → «Москва»).
+    """
+    geo = geocode_open_meteo(city) or geocode_nominatim(city)
+    if geo:
+        return geo
+
+    normalized = normalize_city_name(city)
+    if normalized.lower() != city.lower():
+        geo = geocode_open_meteo(normalized) or geocode_nominatim(normalized)
+        if geo:
+            return geo
+
+    return None
 
 def fetch_open_meteo_current(geo: dict):
     try:
