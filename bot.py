@@ -1196,6 +1196,13 @@ FOLLOWUP_MARKERS = [
 ]
 
 def extract_image_prompt_with_context(text: str, peer_id: int) -> str:
+    """
+    Склеиваем с прошлым запросом ТОЛЬКО если пользователь явно просит
+    что-то доработать/изменить в уже нарисованном (по маркерам).
+    Короткая длина нового запроса САМА ПО СЕБЕ больше не считается
+    признаком уточнения — иначе любой новый короткий запрос («нарисуй Москву»)
+    ошибочно склеивался с предыдущей, никак не связанной темой.
+    """
     history = get_history(peer_id)
     last_image_prompt = None
     for msg in reversed(history):
@@ -1208,10 +1215,8 @@ def extract_image_prompt_with_context(text: str, peer_id: int) -> str:
 
     new_prompt = extract_image_prompt(text)
     t_lower = text.lower()
-    is_followup = last_image_prompt and (
-        len(new_prompt.split()) <= 5
-        or any(marker in t_lower for marker in FOLLOWUP_MARKERS)
-    )
+    is_followup = bool(last_image_prompt) and any(marker in t_lower for marker in FOLLOWUP_MARKERS)
+
     if is_followup:
         return f"{last_image_prompt}, {new_prompt}".strip(", ")
     return new_prompt
