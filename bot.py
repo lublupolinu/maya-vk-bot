@@ -313,7 +313,7 @@ class ProviderRotator:
                 "name": "Groq",
                 "url": GROQ_URL,
                 "key": GROQ_KEY,
-                "model": "llama-3.3-70b-versatile",
+                "model": "openai/gpt-oss-120b",
                 "daily_limit": 12000,
                 "count": 0,
                 "available": bool(GROQ_KEY),
@@ -1228,7 +1228,7 @@ def translate_prompt_to_english(prompt: str) -> str:
         r = requests.post(
             GROQ_URL,
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": "openai/gpt-oss-120b",
                 "messages": [
                    {"role": "system", "content": (
                         "Translate the image description to English for AI image generation. "
