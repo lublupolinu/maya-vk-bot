@@ -1367,7 +1367,7 @@ def generate_via_cloudflare_flux(prompt: str):
 
 def generate_image(prompt: str):
     eng = translate_prompt_to_english(prompt)
-    for gen_func in (generate_via_together_flux, generate_via_cloudflare_flux, generate_via_pollinations):
+    for gen_func in (generate_via_cloudflare_flux, generate_via_together_flux, generate_via_pollinations):
         img = gen_func(eng)
         if img and is_valid_image(img):
             return img
