@@ -1228,7 +1228,7 @@ def translate_prompt_to_english(prompt: str) -> str:
         r = requests.post(
             GROQ_URL,
             json={
-                "model": "openai/gpt-oss-120b",
+                "model": "llama-3.3-70b-versatile",
                 "messages": [
                    {"role": "system", "content": (
                         "Translate the image description to English for AI image generation. "
