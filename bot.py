@@ -1167,25 +1167,49 @@ def get_fact_check_context(text: str):
 # ============================================================
 #  ПОИСК В ИНТЕРНЕТЕ (бесплатно, без ключа, с резервным движком)
 # ============================================================
-# Действия — по корням слов, чтобы ловить любую форму:
-# "посмотри"/"посмотреть"/"посмотришь", "поищи"/"поищешь" и т.д.
-WEB_SEARCH_ACTION_STEMS = [
-    "посмотр", "поищ", "найд", "погугл", "загугл",
-    "проверь", "провер", "узна", "глянь", "разузна", "выясни",
-]
-# Темы — тоже по корням: "стои" ловит стоит/стоят/стоило/стоила,
-# "цен" ловит цена/цены/ценник/ценам, и т.д.
-WEB_SEARCH_TOPIC_STEMS = [
-    "интернет", "стои", "цен", "стоимост", "прайс",
-    "курс валют", "курс доллара", "курс евро", "курс рубля", "курс юаня",
-    "новост", "актуальн",
-]
+def classify_web_search_intent(text: str):
+    """
+    Определяем ПО СМЫСЛУ (через бесплатную модель из ротации), нужен ли
+    веб-поиск для этого сообщения, и если да — формулируем поисковый запрос.
+    Возвращает строку запроса или None, если поиск не требуется.
+    """
+    if not text or not text.strip():
+        return None
+    messages = [
+        {"role": "system", "content": (
+            "Ты — классификатор намерений. Определи, требует ли сообщение "
+            "пользователя поиска АКТУАЛЬНОЙ информации в интернете — например: "
+            "текущие цены, курсы валют, свежие новости, факты, которые могли "
+            "устареть или быстро меняются, любая просьба узнать/проверить/"
+            "посмотреть что-то в сети (в любой формулировке, любым способом "
+            "выраженная просьба).\n"
+            "НЕ считай запросом поиска: обычный разговор, шутки, философские "
+            "или личные темы, вопросы, на которые можно ответить общими "
+            "знаниями без устаревания, а также вопросы про погоду, время или "
+            "заведения (это обрабатывается отдельным механизмом).\n"
+            "Ответь СТРОГО в формате JSON, без пояснений и без markdown-обёртки: "
+            '{"need_search": true или false, "query": "короткий поисковый запрос на русском или пустая строка"}'
+        )},
+        {"role": "user", "content": text},
+    ]
+    try:
+        raw = call_ai_with_rotation(messages).strip()
+        raw = re.sub(r'^```(?:json)?|```$', '', raw, flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        if data.get("need_search") and data.get("query"):
+            return str(data["query"]).strip()
+    except Exception as e:
+        print(f"[intent classify error] {e}")
+    return None
 
-def has_web_search_intent(text: str) -> bool:
-    t = text.lower()
-    has_action = any(stem in t for stem in WEB_SEARCH_ACTION_STEMS)
-    has_topic = any(stem in t for stem in WEB_SEARCH_TOPIC_STEMS)
-    return has_action or has_topic
+
+def web_search_context_by_intent(text: str):
+    """Склеиваем классификацию намерения и сам поиск в один шаг для with_typing."""
+    query = classify_web_search_intent(text)
+    if not query:
+        return None
+    print(f"[web search] Намерение распознано, запрос: «{query}»")
+    return fetch_web_search_context(query)
 
 
 def _clean_html(s: str) -> str:
@@ -2048,8 +2072,8 @@ def main():
                                          conv_message_id=cmid)
                             continue
 
-                    if text and not extra_context and has_web_search_intent(text):
-                        extra_context = with_typing(vk, peer_id, fetch_web_search_context, text)
+                    if text and not extra_context:
+                        extra_context = with_typing(vk, peer_id, web_search_context_by_intent, text)
 
                     if text and not extra_context and looks_like_factual_query(text):
                         extra_context = with_typing(vk, peer_id, get_fact_check_context, text)
