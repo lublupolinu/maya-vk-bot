@@ -1165,24 +1165,34 @@ def get_fact_check_context(text: str):
     return ctx
 
 # ============================================================
-#  ПОИСК В ИНТЕРНЕТЕ (DuckDuckGo, бесплатно, без ключа)
+#  ПОИСК В ИНТЕРНЕТЕ (бесплатно, без ключа, с резервным движком)
 # ============================================================
-WEB_SEARCH_TRIGGERS = [
-    "посмотри в интернете", "поищи в интернете", "найди в интернете",
-    "загугли", "погугли", "актуальная цена", "актуальную цену",
-    "сколько стоит", "сколько сейчас стоит", "текущая цена", "текущую цену",
-    "курс валют", "курс доллара", "курс евро", "цена на", "стоимость",
-    "прайс", "последние новости", "что нового", "актуальные новости",
+# Действия — по корням слов, чтобы ловить любую форму:
+# "посмотри"/"посмотреть"/"посмотришь", "поищи"/"поищешь" и т.д.
+WEB_SEARCH_ACTION_STEMS = [
+    "посмотр", "поищ", "найд", "погугл", "загугл",
+    "проверь", "провер", "узна", "глянь", "разузна", "выясни",
+]
+# Темы — тоже по корням: "стои" ловит стоит/стоят/стоило/стоила,
+# "цен" ловит цена/цены/ценник/ценам, и т.д.
+WEB_SEARCH_TOPIC_STEMS = [
+    "интернет", "стои", "цен", "стоимост", "прайс",
+    "курс валют", "курс доллара", "курс евро", "курс рубля", "курс юаня",
+    "новост", "актуальн",
 ]
 
 def has_web_search_intent(text: str) -> bool:
-    return any(kw in text.lower() for kw in WEB_SEARCH_TRIGGERS)
+    t = text.lower()
+    has_action = any(stem in t for stem in WEB_SEARCH_ACTION_STEMS)
+    has_topic = any(stem in t for stem in WEB_SEARCH_TOPIC_STEMS)
+    return has_action or has_topic
 
-def fetch_web_search_context(query: str):
-    """
-    Бесплатный веб-поиск через публичную HTML-выдачу DuckDuckGo.
-    Без ключа, без лимитов. Возвращает 3 первых результата (заголовок + сниппет).
-    """
+
+def _clean_html(s: str) -> str:
+    return re.sub(r'<[^<]+?>', '', s).strip()
+
+
+def fetch_web_search_duckduckgo(query: str):
     try:
         r = requests.post(
             "https://html.duckduckgo.com/html/",
@@ -1193,20 +1203,75 @@ def fetch_web_search_context(query: str):
         html = r.text
         titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
         snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
-        clean = lambda s: re.sub(r'<[^<]+?>', '', s).strip()
-
         results = []
-        for t, s in zip(titles[:3], snippets[:3]):
-            t_clean, s_clean = clean(t), clean(s)
+        for t, s in zip(titles[:4], snippets[:4]):
+            t_clean, s_clean = _clean_html(t), _clean_html(s)
             if t_clean or s_clean:
                 results.append(f"• {t_clean}: {s_clean}")
-
-        if not results:
-            return None
-        return "[Результаты поиска в интернете]:\n" + "\n".join(results)
+        return results or None
     except Exception as e:
-        print(f"[web search error] {e}")
+        print(f"[web search ddg error] {e}")
         return None
+
+
+def fetch_web_search_duckduckgo_lite(query: str):
+    """Упрощённая версия DuckDuckGo — реже блокируется, меньше вёрстки."""
+    try:
+        r = requests.get(
+            "https://lite.duckduckgo.com/lite/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (MayaAI-VK-Bot/2.0)"},
+            timeout=12,
+        )
+        html = r.text
+        rows = re.findall(r'class="result-link"[^>]*>(.*?)</a>', html, re.DOTALL)
+        snippets = re.findall(r'class="result-snippet"[^>]*>(.*?)</td>', html, re.DOTALL)
+        results = []
+        for t, s in zip(rows[:4], snippets[:4]):
+            t_clean, s_clean = _clean_html(t), _clean_html(s)
+            if t_clean or s_clean:
+                results.append(f"• {t_clean}: {s_clean}")
+        return results or None
+    except Exception as e:
+        print(f"[web search ddg-lite error] {e}")
+        return None
+
+
+def fetch_web_search_bing(query: str):
+    """Резервный движок — публичная HTML-выдача Bing, без ключа."""
+    try:
+        r = requests.get(
+            "https://www.bing.com/search",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (MayaAI-VK-Bot/2.0)"},
+            timeout=12,
+        )
+        html = r.text
+        titles = re.findall(r'<h2><a[^>]*>(.*?)</a></h2>', html, re.DOTALL)
+        snippets = re.findall(r'class="b_lineclamp\d?"[^>]*>(.*?)</p>', html, re.DOTALL)
+        results = []
+        for t, s in zip(titles[:4], snippets[:4]):
+            t_clean, s_clean = _clean_html(t), _clean_html(s)
+            if t_clean or s_clean:
+                results.append(f"• {t_clean}: {s_clean}")
+        return results or None
+    except Exception as e:
+        print(f"[web search bing error] {e}")
+        return None
+
+
+def fetch_web_search_context(query: str):
+    """
+    Пробуем несколько бесплатных источников по очереди —
+    если один заблокирован/недоступен, переходим к следующему.
+    """
+    for engine in (fetch_web_search_duckduckgo, fetch_web_search_duckduckgo_lite, fetch_web_search_bing):
+        results = engine(query)
+        if results:
+            print(f"[web search] ✅ {engine.__name__}")
+            return "[Результаты поиска в интернете]:\n" + "\n".join(results)
+    print("[web search] Все движки недоступны")
+    return None
         
 # ============================================================
 #  ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ
