@@ -1779,13 +1779,11 @@ def should_respond_in_chat(message: dict) -> tuple:
         print(f"[chat] Упоминание → '{clean}'")
         return True, clean
 
-        reply = message.get("reply_message")
+    reply = message.get("reply_message")
     if reply and reply.get("from_id", 0) == -GROUP_ID:
         print(f"[chat] Reply на бота → отвечаю")
         return True, text
 
-    # VK иногда доставляет ответ на сообщение бота не через reply_message,
-    # а как пересланное сообщение (fwd_messages) — особенно в длинных беседах
     fwd = message.get("fwd_messages") or []
     if fwd and fwd[0].get("from_id", 0) == -GROUP_ID:
         print(f"[chat] Fwd-ответ на бота → отвечаю")
